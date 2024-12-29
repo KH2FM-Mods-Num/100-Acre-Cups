@@ -11,70 +11,89 @@ WriteByte(Save+0x000D,R)
 WriteShort(Save+0x000E,D)
 end
 
-function Spawn(Type,Subfile,Offset,Value)
-local Subpoint = ARD + 0x08 + 0x10*Subfile
+function BAR(File,Subfile,Offset) --Get address within a BAR file
+local Subpoint = File + 0x08 + 0x10*Subfile
 local Address
 --Detect errors
-if ReadInt(ARD,OnPC) ~= 0x01524142 then --Header mismatch
+if ReadInt(File,OnPC) ~= 0x01524142 then --Header mismatch
 	return
-elseif Subfile > ReadInt(ARD+4,OnPC) then --Subfile over count
+elseif Subfile > ReadInt(File+4,OnPC) then --Subfile over count
 	return
 elseif Offset >= ReadInt(Subpoint+4,OnPC) then --Offset exceed subfile length
 	return
 end
 --Get address
-if not OnPC then
-	Address = ReadInt(Subpoint) + Offset
-else
-	local x = ARD&0xFFFFFF000000 --Calculations are wrong if done in one step for some reason
-	local y = ReadInt(Subpoint,true)&0xFFFFFF
-	Address = x + y + Offset
-end
---Change value
-if Type == 'Short' then
-	WriteShort(Address,Value,OnPC)
-elseif Type == 'Float' then
-	WriteFloat(Address,Value,OnPC)
-elseif Type == 'Int' then
-	WriteInt(Address,Value,OnPC)
-elseif Type == 'String' then
-	WriteString(Address,Value,OnPC)
-end
+Address = File + (ReadInt(Subpoint,OnPC) - ReadInt(File+8,OnPC)) + Offset
+return Address
 end
 
 function _OnInit()
-local VersionNum = 'GoA Version 1.53.2'
-if (GAME_ID == 0xF266B00B or GAME_ID == 0xFAF99301) and ENGINE_TYPE == "ENGINE" then --PCSX2
-	OnPC = false
-	Now = 0x032BAE0 --Current Location
-	Save = 0x032BB30 --Save File
-	ARDLoad  = 0x034ECF4 --ARD Pointer Address
-elseif GAME_ID == 0x431219CC and ENGINE_TYPE == 'BACKEND' then --PC
-	OnPC = true
-	Now = 0x0714DB8 - 0x56454E
-	Save = 0x09A7070 - 0x56450E
-	ARDLoad  = 0x2A0CEE8 - 0x56450E
-end
+GameVersion = 0
 CupFlags = {0x02,0x200,0x08,0x10,0x100}
 FromPooh = false
 end
 
+function GetVersion() --Define anchor addresses
+if (GAME_ID == 0xF266B00B or GAME_ID == 0xFAF99301) and ENGINE_TYPE == "ENGINE" then --PCSX2
+	OnPC = false
+	GameVersion = 1
+	Now = 0x032BAE0 --Current Location
+	Save = 0x032BB30 --Save File
+	ARDPointer  = 0x034ECF4 --ARD Pointer Address
+elseif GAME_ID == 0x431219CC and ENGINE_TYPE == 'BACKEND' then --PC
+	OnPC = true
+	if ReadString(0x9A9330,4) == 'KH2J' then --EGS
+		GameVersion = 2
+		Now = 0x0716DF8
+		Save = 0x09A9330
+		ARDPointer = 0x2A0F2A8
+	elseif ReadString(0x9A98B0,4) == 'KH2J' then --Steam Global
+		GameVersion = 3
+		Now = 0x0717008
+		Save = 0x09A98B0
+		ARDPointer = 0x2A0F828
+	elseif ReadString(0x9A98B0,4) == 'KH2J' then --Steam JP (same as Global for now)
+		GameVersion = 4
+		Now = 0x0717008
+		Save = 0x09A98B0
+		ARDPointer = 0x2A0F828
+	elseif ReadString(0x9A7070,4) == "KH2J" or ReadString(0x9A70B0,4) == "KH2J" or ReadString(0x9A92F0,4) == "KH2J" then
+		GameVersion = -1
+		print("Epic Version is outdated. Please update the game.")
+	elseif ReadString(0x9A9830,4) == "KH2J" then
+		GameVersion = -1
+		print("Steam Global Version is outdated. Please update the game.")
+	elseif ReadString(0x9A8830,4) == "KH2J" then
+		GameVersion = -1
+		print("Steam JP Version is outdated. Please update the game.")
+	end
+end
+end
+
 function _OnFrame()
-if ReadShort(Now) == 0x0906 and ReadShort(Now+0x30) == 0x0009 then --Warp back to 100AW from cups
+if GameVersion == 0 then --Get anchor addresses
+	GetVersion()
+	return
+elseif GameVersion < 0 then --Incompatible version
+	return
+end
+
+local Place = ReadShort(Now)
+if Place == 0x0906 and ReadShort(Now+0x30) == 0x0009 then --Record if going to cups from 100AW
 	FromPooh = true
-elseif FromPooh and (ReadShort(Now) == 0x0306 or ReadShort(Now) == 0x0606) then
+elseif FromPooh and (Place == 0x0306 or Place == 0x0606) then --Warp back to 100AW from cups
 	Warp(0x09,0x00,0x63,ReadShort(Save+0x0D90),ReadShort(Save+0x0D92),ReadShort(Save+0x0D94))
 	FromPooh = false
-elseif ReadShort(Now) == 0x0009 then --Remove triggers for locked cups
+elseif Place == 0x0009 then --Remove event triggers for locked cups
 	if not OnPC then
-		ARD = ReadInt(ARDLoad) --Base ARD Address
+		ARD = ReadInt(ARDPointer)
 	else
-		ARD = ReadLong(ARDLoad) --Base ARD Address
+		ARD = ReadLong(ARDPointer)
 	end
 	for i = 1,5 do
 		CupFlag = CupFlags[i]
 		if ReadShort(Save+0x239C) & CupFlag ~= CupFlag then
-			Spawn('Short',0x1E,0x8+0x20*(i-1),0xA5+i)
+			WriteShort(BAR(ARD,0x1E,0x8+0x20*(i-1)),0xA5+i,OnPC)
 		end
 	end
 end
